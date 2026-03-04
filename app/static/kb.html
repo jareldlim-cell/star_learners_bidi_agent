@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Knowledge Base Manager</title>
+    <link rel="icon" type="image/jpeg" href="https://scontent.fkul8-4.fna.fbcdn.net/v/t39.30808-6/409800028_768338051973763_4459650912449556577_n.jpg?_nc_cat=100&ccb=1-7&_nc_sid=1d70fc&_nc_ohc=hKl1gkCFTEgQ7kNvwFsvSc8&_nc_oc=Adn0w4eddRC6_piLZQKZuZQW3vEO4pO9v9HhxipBuFATDHzyalLq6j6W9w5Ok5u_SDf5Qzaw5TRPBSN_DptGAnyJ&_nc_zt=23&_nc_ht=scontent.fkul8-4.fna&_nc_gid=raQhUqA4zn6Mwq-6Qhp6Bg&_nc_ss=8&oh=00_AfwvmNpG-rHvMLEFgLogaHNLKc0d5dKhxou-_GWqM4iZxg&oe=69AD0176">
+    <link rel="stylesheet" href="/static/css/style.css">
+    <script src="/static/js/kb.js" type="module"></script>
+    <style>
+      .kb-container { padding: 2rem; max-width: 800px; margin: auto; }
+      .kb-section { margin-bottom: 2rem; }
+      .kb-section h2 { margin-bottom: 0.5rem; }
+      .kb-list { margin-top: 1rem; }
+      .kb-list pre { background: #f8f9fa; padding: 0.5rem; }
+    </style>
+  </head>
+  <body>
+    <!-- reuse main header style for consistency -->
+    <header>
+      <h1>Knowledge Base Manager</h1>
+      <div class="header-options">
+        <a href="/" class="manage-link">Back to Chat</a>
+      </div>
+    </header>
+    <div class="kb-container">
+      <div class="kb-section" id="uploadSection">
+        <h2>Import URL</h2>
+        <form id="kbUploadForm">
+          <input type="url" id="kbUploadUrl" placeholder="https://example.com" required />
+          <button type="submit">Upload</button>
+        </form>
+        <div id="kbUploadStatus" class="kb-status"></div>
+      </div>
+      <div class="kb-section" id="filesSection">
+        <h2>Corpus Files</h2>
+        <button id="kbListFiles">Refresh list</button>
+        <div id="kbFilesList" class="kb-list"></div>
+      </div>
+      <div class="kb-section" id="deleteSection">
+        <h2>Delete Content</h2>
+        <input type="text" id="kbDeleteFileId" placeholder="File ID to delete" />
+        <button id="kbDeleteFile">Delete file</button>
+        <div id="kbDeleteStatus" class="kb-status"></div>
+        <hr />
+        <button id="kbDeleteCorpus">Delete entire corpus</button>
+        <div id="kbDeleteCorpusStatus" class="kb-status"></div>
+      </div>
+    </div>
+  </body>
+</html>
