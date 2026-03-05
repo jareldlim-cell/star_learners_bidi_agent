@@ -210,6 +210,8 @@ const COUNTRY_CODES = [
 
 // Store user information
 let userInfo = null;
+let conversationStartedAt = null;
+let sessionEndedAt = null;
 
 // Text-to-speech function
 function speakMessage(text, options = {}) {
@@ -329,6 +331,13 @@ const userInfoForm = document.getElementById("userInfoForm");
 const countryCodeInput = document.getElementById("countryCodeInput");
 const countryCodeDropdown = document.getElementById("countryCodeDropdown");
 const countryCodeHidden = document.getElementById("countryCode");
+const endConversationModal = document.getElementById("endConversationModal");
+const closeEndConversationModal = document.getElementById("closeEndConversationModal");
+const closeSummaryButton = document.getElementById("closeSummaryButton");
+const summarySessionId = document.getElementById("summarySessionId");
+const summaryUserName = document.getElementById("summaryUserName");
+const summaryUserEmail = document.getElementById("summaryUserEmail");
+const summaryDuration = document.getElementById("summaryDuration");
 
 // Initialize custom country code dropdown
 if (countryCodeInput && countryCodeDropdown) {
@@ -455,6 +464,11 @@ if (userInfoForm) {
       phoneNumber: document.getElementById("phoneNumber").value.trim(),
       emailAddress: document.getElementById("emailAddress").value.trim()
     };
+
+    conversationStartedAt = null;
+    sessionEndedAt = null;
+    isEndingConversation = false;
+    hasEndedConversation = false;
     
     // Hide the modal
     userInfoModal.classList.add("hidden");
@@ -463,9 +477,12 @@ if (userInfoForm) {
     ensureAudioOutputStarted().catch((error) => {
       console.warn("Failed to initialize audio output on submit:", error);
     });
-    
+
     // Connect WebSocket and start the agent
     connectWebsocket();
+    if (endConversationButton) {
+      endConversationButton.disabled = false;
+    }
   });
 }
 
@@ -479,6 +496,8 @@ const sessionId = "demo-session-" + Math.random().toString(36).substring(7);
 let websocket = null;
 let is_audio = false;
 let hasRequestedAgentWelcome = false;
+let isEndingConversation = false;
+let hasEndedConversation = false;
 
 async function requestAgentWelcome() {
   if (hasRequestedAgentWelcome || !userInfo || !websocket || websocket.readyState !== WebSocket.OPEN) {
@@ -490,7 +509,8 @@ async function requestAgentWelcome() {
     console.warn("Audio output not ready for welcome message:", error);
   });
 
-  const welcomeMessage = `Hi ${userInfo.fullName}, I am STELLA, your personal assistant at Star Learners! 👋  I'm here to walk you through our centre facilities and support you with any information you need. Are you ready to begin?`;
+  // const welcomeMessage = `Hi ${userInfo.fullName}, I am STELLA, your personal assistant at Star Learners! 👋  I'm here to walk you through our centre facilities and support you with any information you need. Are you ready to begin?`;
+  const welcomeMessage = `Hi ${userInfo.fullName}, I am STELLA`;
   const bootstrapPrompt = `Say this greeting exactly in one response, without adding extra text: "${welcomeMessage}"`;
   sendMessage(bootstrapPrompt, { isInternal: true });
   hasRequestedAgentWelcome = true;
@@ -555,7 +575,11 @@ const statusIndicator = document.getElementById("statusIndicator");
 const statusText = document.getElementById("statusText");
 const consoleContent = document.getElementById("consoleContent");
 const clearConsoleBtn = document.getElementById("clearConsole");
+const openConsoleButton = document.getElementById("openConsoleButton");
+const closeConsoleButton = document.getElementById("closeConsoleButton");
+const consolePopup = document.getElementById("consolePopup");
 const showAudioEventsCheckbox = document.getElementById("showAudioEvents");
+const endConversationButton = document.getElementById("endConversationButton");
 let currentMessageId = null;
 let currentBubbleElement = null;
 let currentInputTranscriptionId = null;
@@ -569,7 +593,12 @@ const INTERRUPTION_UNLOCK_MS = 6000;
 const WAKE_REPLY_TEXT = "Yes, I'm here! What can I help you with?";
 const ENGLISH_ONLY_NOTICE = "Please use English only.";
 const DEFAULT_YOUTUBE_URL = "https://youtu.be/tkhpVEcBfv0";
-const VIRTUAL_TOUR_INTRO_TEXT = "THere’s a virtual tour of our center! Feel free to explore it to learn more. If you have any questions, just let me know 😊";
+const RESUME_VIDEO_HINT_TEXT = 'Video paused. Say "Please continue to play the video" to resume.';
+const REGISTRATION_URL = "https://starlearners.com.sg/admission/register-your-interest/";
+const REGISTRATION_PROMPT_TEXT = "Great! You can proceed with registration here to embark on a new journey with us:";
+const TOUR_END_QUESTION = "That's the end of the virtual tour! Do you have any questions or anything else you'd like to know?";
+// const VIRTUAL_TOUR_INTRO_TEXT = "Great to hear that! I'll take you on a virtual tour of our center. Feel free to explore and learn more about what we offer. If you have any questions along the way, just let me know 😊";
+const VIRTUAL_TOUR_INTRO_TEXT = "Great to hear that!😊";
 let interruptionUnlockedUntil = 0;
 let isAgentSpeaking = false;
 const KEYWORD_COOLDOWN_MS = 3000;
@@ -581,14 +610,22 @@ let lastVideoCommandAt = 0;
 const VIDEO_FALLBACK_SUPPRESS_MS = 15000;
 let suppressVideoFallbackUntil = 0;
 let suppressAgentOutputForTurn = false;
+let suppressAgentOutputResetTimer = null;
 let awaitingWelcomeConfirmation = false;
 let hasTriggeredVirtualTourIntro = false;
 let pendingWelcomeScriptAfterTurn = false;
 let pendingVirtualTourVideo = false;
+let pendingRegistrationLinkAfterTurn = false;
+let hasShownRegistrationPrompt = false;
 let floatingVideoContainer = null;
 let floatingVideoIframe = null;
-let floatingVideoMinimizeButton = null;
+let floatingVideoResumeHint = null;
 let currentYouTubeWatchUrl = DEFAULT_YOUTUBE_URL;
+let hasHandledTourEnd = false;
+let postTourFollowupActive = false;
+let youtubePlayer = null;
+let youtubeApiReadyPromise = null;
+let youtubeEndMonitorInterval = null;
 let keywordRecognizer = null;
 let keywordRecognizerActive = false;
 
@@ -662,6 +699,71 @@ function isVideoFallbackReply(text) {
     || normalized.includes("i am unable to play video");
 }
 
+function isResumeVideoCommand(text) {
+  const normalized = normalizeKeywordText(text);
+  if (!normalized) {
+    return false;
+  }
+  return normalized.includes("please continue to play the video")
+    || normalized.includes("continue to play the video")
+    || (normalized.includes("continue") && normalized.includes("play") && normalized.includes("video"));
+}
+
+function isNoOrSatisfied(text) {
+  const normalized = normalizeKeywordText(text);
+  if (!normalized) {
+    return false;
+  }
+  return /\b(no|nope|nah|none|nothing)\b/.test(normalized)
+    || normalized.includes("no thanks")
+    || normalized.includes("no thank you")
+    || normalized.includes("no questions")
+    || normalized.includes("nothing else")
+    || normalized.includes("that is all")
+    || normalized.includes("thats all")
+    || normalized.includes("i am good")
+    || normalized.includes("im good")
+    || normalized.includes("i am satisfied")
+    || normalized.includes("satisfied");
+}
+
+function clearSuppressAgentOutput() {
+  suppressAgentOutputForTurn = false;
+  if (suppressAgentOutputResetTimer) {
+    clearTimeout(suppressAgentOutputResetTimer);
+    suppressAgentOutputResetTimer = null;
+  }
+}
+
+function suppressAgentOutputTemporarily(durationMs = 5000) {
+  suppressAgentOutputForTurn = true;
+  if (suppressAgentOutputResetTimer) {
+    clearTimeout(suppressAgentOutputResetTimer);
+  }
+  suppressAgentOutputResetTimer = setTimeout(() => {
+    suppressAgentOutputForTurn = false;
+    suppressAgentOutputResetTimer = null;
+  }, durationMs);
+}
+
+function showRegistrationLinkPrompt() {
+  if (hasShownRegistrationPrompt) {
+    return;
+  }
+  hasShownRegistrationPrompt = true;
+  postTourFollowupActive = false;
+  pendingRegistrationLinkAfterTurn = false;
+
+  const prompt = `Reply to the user now with this exact sentence: "${REGISTRATION_PROMPT_TEXT} ${REGISTRATION_URL} . We look forward to seeing you soon!" After this reply, do not ask any further follow-up questions.`;
+  sendMessage(prompt, { isInternal: true });
+}
+
+function showAgentTextMessage(text) {
+  const messageDiv = createMessageBubble(text, false, false);
+  messagesDiv.appendChild(messageDiv);
+  scrollToBottom();
+}
+
 function isWelcomeConfirmation(text) {
   const normalized = normalizeKeywordText(text);
   if (!normalized) {
@@ -699,7 +801,7 @@ function handleWelcomeConfirmation(text, fromVoice = false) {
 
   if (fromVoice) {
     // Suppress model response to the raw confirmation turn, then inject scripted intro.
-    suppressAgentOutputForTurn = true;
+    suppressAgentOutputTemporarily(8000);
     pendingWelcomeScriptAfterTurn = true;
   } else {
     startVirtualTourIntro();
@@ -708,10 +810,24 @@ function handleWelcomeConfirmation(text, fromVoice = false) {
   return true;
 }
 
-function ensureFloatingVideoPlayer() {
-  if (floatingVideoContainer && floatingVideoIframe && floatingVideoMinimizeButton) {
+function renderVideoStagePlaceholder() {
+  const stage = document.getElementById("videoStage");
+  if (!stage) {
     return;
   }
+  stage.innerHTML = '<div class="video-placeholder">Virtual tour will begin shortly.</div>';
+}
+
+function ensureFloatingVideoPlayer() {
+  if (floatingVideoContainer && floatingVideoIframe) {
+    return;
+  }
+
+  const stage = document.getElementById("videoStage");
+  if (!stage) {
+    return;
+  }
+  stage.innerHTML = "";
 
   const player = document.createElement("div");
   player.className = "floating-video-player";
@@ -730,34 +846,12 @@ function ensureFloatingVideoPlayer() {
   const openButton = document.createElement("button");
   openButton.type = "button";
   openButton.className = "floating-video-btn";
-  openButton.textContent = "Open";
+  openButton.textContent = "Open in YouTube";
   openButton.addEventListener("click", () => {
     window.open(currentYouTubeWatchUrl, "_blank", "noopener,noreferrer");
   });
 
-  const minimizeButton = document.createElement("button");
-  minimizeButton.type = "button";
-  minimizeButton.className = "floating-video-btn";
-  minimizeButton.textContent = "Minimize";
-  minimizeButton.addEventListener("click", () => {
-    const minimized = player.classList.toggle("minimized");
-    minimizeButton.textContent = minimized ? "Expand" : "Minimize";
-  });
-
-  const closeButton = document.createElement("button");
-  closeButton.type = "button";
-  closeButton.className = "floating-video-btn danger";
-  closeButton.textContent = "Close";
-  closeButton.addEventListener("click", () => {
-    player.remove();
-    floatingVideoContainer = null;
-    floatingVideoIframe = null;
-    floatingVideoMinimizeButton = null;
-  });
-
   controls.appendChild(openButton);
-  controls.appendChild(minimizeButton);
-  controls.appendChild(closeButton);
   header.appendChild(title);
   header.appendChild(controls);
 
@@ -766,21 +860,242 @@ function ensureFloatingVideoPlayer() {
 
   const iframe = document.createElement("iframe");
   iframe.className = "floating-video-iframe";
+  iframe.id = "tourVideoIframe";
   iframe.src = "";
   iframe.title = "YouTube video player";
   iframe.allow = "accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share";
   iframe.referrerPolicy = "strict-origin-when-cross-origin";
   iframe.allowFullscreen = true;
 
+  const resumeHint = document.createElement("div");
+  resumeHint.className = "video-resume-hint hidden";
+  resumeHint.textContent = RESUME_VIDEO_HINT_TEXT;
+
   body.appendChild(iframe);
+  body.appendChild(resumeHint);
   player.appendChild(header);
   player.appendChild(body);
-  document.body.appendChild(player);
+  stage.appendChild(player);
 
   floatingVideoContainer = player;
   floatingVideoIframe = iframe;
-  floatingVideoMinimizeButton = minimizeButton;
+  floatingVideoResumeHint = resumeHint;
 }
+
+function ensureYouTubeApiReady() {
+  if (window.YT && window.YT.Player) {
+    return Promise.resolve(window.YT);
+  }
+
+  if (youtubeApiReadyPromise) {
+    return youtubeApiReadyPromise;
+  }
+
+  youtubeApiReadyPromise = new Promise((resolve, reject) => {
+    const existingScript = document.querySelector('script[src="https://www.youtube.com/iframe_api"]');
+    const previousReadyHandler = window.onYouTubeIframeAPIReady;
+    let timeoutId = null;
+
+    window.onYouTubeIframeAPIReady = () => {
+      if (typeof previousReadyHandler === "function") {
+        previousReadyHandler();
+      }
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+      resolve(window.YT);
+    };
+
+    if (!existingScript) {
+      const tag = document.createElement("script");
+      tag.src = "https://www.youtube.com/iframe_api";
+      tag.onerror = () => {
+        if (timeoutId) {
+          clearTimeout(timeoutId);
+        }
+        reject(new Error("Failed to load YouTube iframe API"));
+      };
+      document.head.appendChild(tag);
+    }
+
+    timeoutId = setTimeout(() => {
+      reject(new Error("Timed out waiting for YouTube iframe API"));
+    }, 10000);
+  });
+
+  return youtubeApiReadyPromise;
+}
+
+function onYouTubePlayerStateChange(event) {
+  // 0 = ended
+  if (event && event.data === 0) {
+    handleTourVideoEnded();
+    return;
+  }
+
+  // Manual scrub to end can report paused/cued without sending state=0.
+  // 2 = paused, 5 = cued
+  if (event && (event.data === 2 || event.data === 5)) {
+    maybeHandleTourEndByProgress();
+  }
+}
+
+function maybeHandleTourEndByProgress() {
+  if (!youtubePlayer || hasHandledTourEnd) {
+    return;
+  }
+  if (typeof youtubePlayer.getCurrentTime !== "function" || typeof youtubePlayer.getDuration !== "function") {
+    return;
+  }
+
+  const duration = youtubePlayer.getDuration();
+  const currentTime = youtubePlayer.getCurrentTime();
+  if (!duration || duration <= 0) {
+    return;
+  }
+
+  const progress = currentTime / duration;
+  const remainingSeconds = duration - currentTime;
+  const nearEnd = progress >= 0.98 || remainingSeconds <= 2;
+  if (nearEnd) {
+    handleTourVideoEnded();
+  }
+}
+
+function startYouTubeEndMonitor() {
+  if (youtubeEndMonitorInterval) {
+    clearInterval(youtubeEndMonitorInterval);
+  }
+
+  youtubeEndMonitorInterval = setInterval(() => {
+    if (!youtubePlayer || typeof youtubePlayer.getPlayerState !== "function") {
+      return;
+    }
+
+    if (hasHandledTourEnd) {
+      return;
+    }
+
+    if (
+      typeof youtubePlayer.getCurrentTime === "function"
+      && typeof youtubePlayer.getDuration === "function"
+    ) {
+      const duration = youtubePlayer.getDuration();
+      const currentTime = youtubePlayer.getCurrentTime();
+      if (duration > 0 && duration - currentTime <= 0.75) {
+        handleTourVideoEnded();
+        return;
+      }
+    }
+
+    const state = youtubePlayer.getPlayerState();
+    if (state === 0) {
+      handleTourVideoEnded();
+      return;
+    }
+
+    // 1 = playing. For all other states, check if user is effectively at the end.
+    if (state !== 1) {
+      maybeHandleTourEndByProgress();
+    }
+  }, 1000);
+}
+
+function loadVideoWithYouTubeApi(videoId) {
+  if (!floatingVideoIframe) {
+    return;
+  }
+
+  ensureYouTubeApiReady()
+    .then(() => {
+      if (!floatingVideoIframe) {
+        return;
+      }
+
+      if (!youtubePlayer) {
+        youtubePlayer = new window.YT.Player(floatingVideoIframe.id, {
+          videoId,
+          playerVars: {
+            autoplay: 1,
+            rel: 0,
+            enablejsapi: 1,
+            origin: window.location.origin,
+          },
+          events: {
+            onStateChange: onYouTubePlayerStateChange,
+            onReady: startYouTubeEndMonitor,
+          },
+        });
+        startYouTubeEndMonitor();
+        return;
+      }
+
+      youtubePlayer.loadVideoById(videoId);
+      youtubePlayer.playVideo();
+      startYouTubeEndMonitor();
+    })
+    .catch((error) => {
+      console.warn("YouTube API load failed, falling back to iframe src.", error);
+      if (floatingVideoIframe) {
+        floatingVideoIframe.src = `https://www.youtube.com/embed/${videoId}?autoplay=1&rel=0&enablejsapi=1`;
+      }
+    });
+}
+
+function handleTourVideoEnded() {
+  if (hasHandledTourEnd) {
+    return;
+  }
+  clearSuppressAgentOutput();
+  hasHandledTourEnd = true;
+  postTourFollowupActive = true;
+  hasShownRegistrationPrompt = false;
+
+  const prompt = `The virtual tour has ended. Reply to the user now with this exact sentence: "${TOUR_END_QUESTION}".`;
+  sendMessage(prompt, { isInternal: true });
+}
+
+function onYouTubeIframeMessage(event) {
+  if (!event || typeof event.origin !== "string" || !event.origin.includes("youtube.com")) {
+    return;
+  }
+
+  let payload = event.data;
+  if (typeof payload === "string") {
+    try {
+      payload = JSON.parse(payload);
+    } catch (e) {
+      return;
+    }
+  }
+  if (!payload) {
+    return;
+  }
+
+  let playerState = null;
+  if (payload.event === "onStateChange" && typeof payload.info === "number") {
+    playerState = payload.info;
+  } else if (
+    payload.event === "infoDelivery"
+    && payload.info
+    && typeof payload.info.playerState === "number"
+  ) {
+    playerState = payload.info.playerState;
+  }
+
+  // 0 = ended
+  if (playerState === 0) {
+    handleTourVideoEnded();
+    return;
+  }
+
+  // 2 = paused, 5 = cued
+  if (playerState === 2 || playerState === 5) {
+    maybeHandleTourEndByProgress();
+  }
+}
+
+window.addEventListener("message", onYouTubeIframeMessage);
 
 function playYouTubeVideo(videoUrl = DEFAULT_YOUTUBE_URL) {
   const now = Date.now();
@@ -789,6 +1104,7 @@ function playYouTubeVideo(videoUrl = DEFAULT_YOUTUBE_URL) {
   }
   lastVideoCommandAt = now;
   suppressVideoFallbackUntil = now + VIDEO_FALLBACK_SUPPRESS_MS;
+  hasHandledTourEnd = false;
 
   const videoId = extractYouTubeVideoId(videoUrl);
   if (!videoId) {
@@ -799,13 +1115,74 @@ function playYouTubeVideo(videoUrl = DEFAULT_YOUTUBE_URL) {
   currentYouTubeWatchUrl = `https://www.youtube.com/watch?v=${videoId}`;
   ensureFloatingVideoPlayer();
 
-  if (!floatingVideoContainer || !floatingVideoIframe || !floatingVideoMinimizeButton) {
+  if (!floatingVideoContainer || !floatingVideoIframe) {
     return;
   }
 
-  floatingVideoContainer.classList.remove("minimized");
-  floatingVideoMinimizeButton.textContent = "Minimize";
-  floatingVideoIframe.src = `https://www.youtube.com/embed/${videoId}?autoplay=1&rel=0`;
+  // Always set iframe src first so playback still works even if YT API lifecycle is delayed.
+  floatingVideoIframe.src = `https://www.youtube.com/embed/${videoId}?autoplay=1&rel=0&enablejsapi=1&playsinline=1`;
+
+  loadVideoWithYouTubeApi(videoId);
+  // Secondary nudge for browsers that defer autoplay until player is ready.
+  setTimeout(() => {
+    if (floatingVideoIframe && floatingVideoIframe.contentWindow) {
+      floatingVideoIframe.contentWindow.postMessage(
+        JSON.stringify({
+          event: "command",
+          func: "playVideo",
+          args: []
+        }),
+        "*"
+      );
+    }
+  }, 800);
+
+  if (floatingVideoResumeHint) {
+    floatingVideoResumeHint.classList.add("hidden");
+  }
+}
+
+function pauseYouTubeVideo(showHint = true) {
+  if (youtubePlayer && typeof youtubePlayer.pauseVideo === "function") {
+    youtubePlayer.pauseVideo();
+  }
+  if (!floatingVideoIframe || !floatingVideoIframe.contentWindow) {
+    return;
+  }
+  floatingVideoIframe.contentWindow.postMessage(
+    JSON.stringify({
+      event: "command",
+      func: "pauseVideo",
+      args: []
+    }),
+    "*"
+  );
+  if (floatingVideoResumeHint) {
+    floatingVideoResumeHint.classList.remove("hidden");
+  }
+  if (showHint) {
+    addSystemMessage(RESUME_VIDEO_HINT_TEXT);
+  }
+}
+
+function resumeYouTubeVideo() {
+  if (youtubePlayer && typeof youtubePlayer.playVideo === "function") {
+    youtubePlayer.playVideo();
+  }
+  if (!floatingVideoIframe || !floatingVideoIframe.contentWindow) {
+    return;
+  }
+  floatingVideoIframe.contentWindow.postMessage(
+    JSON.stringify({
+      event: "command",
+      func: "playVideo",
+      args: []
+    }),
+    "*"
+  );
+  if (floatingVideoResumeHint) {
+    floatingVideoResumeHint.classList.add("hidden");
+  }
 }
 
 function isEnglishOnlyInput(text) {
@@ -832,6 +1209,7 @@ function unlockInterruptionWindow() {
   if (audioPlayerNode) {
     audioPlayerNode.port.postMessage({ command: "endOfAudio" });
   }
+  pauseYouTubeVideo();
   if (websocket && websocket.readyState === WebSocket.OPEN) {
     const wakeReplyMessage = JSON.stringify({
       type: "text",
@@ -1007,8 +1385,29 @@ function clearConsole() {
   consoleContent.innerHTML = '';
 }
 
+function toggleConsolePopup(show) {
+  if (!consolePopup) {
+    return;
+  }
+  if (show) {
+    consolePopup.classList.remove("hidden-popup");
+  } else {
+    consolePopup.classList.add("hidden-popup");
+  }
+}
+
 // Clear console button handler
-clearConsoleBtn.addEventListener('click', clearConsole);
+if (clearConsoleBtn) {
+  clearConsoleBtn.addEventListener('click', clearConsole);
+}
+
+if (openConsoleButton) {
+  openConsoleButton.addEventListener("click", () => toggleConsolePopup(true));
+}
+
+if (closeConsoleButton) {
+  closeConsoleButton.addEventListener("click", () => toggleConsolePopup(false));
+}
 
 // Update connection status UI
 function updateConnectionStatus(connected) {
@@ -1030,6 +1429,33 @@ function createProfileIcon(isUser) {
   return avatarDiv;
 }
 
+function setBubbleTextWithLinks(element, text) {
+  element.textContent = "";
+  const content = text || "";
+  const urlRegex = /(https?:\/\/[^\s]+)/gi;
+  let lastIndex = 0;
+  let match;
+
+  while ((match = urlRegex.exec(content)) !== null) {
+    const start = match.index;
+    const end = start + match[0].length;
+    if (start > lastIndex) {
+      element.appendChild(document.createTextNode(content.slice(lastIndex, start)));
+    }
+    const link = document.createElement("a");
+    link.href = match[0];
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.textContent = match[0];
+    element.appendChild(link);
+    lastIndex = end;
+  }
+
+  if (lastIndex < content.length) {
+    element.appendChild(document.createTextNode(content.slice(lastIndex)));
+  }
+}
+
 function createMessageBubble(text, isUser, isPartial = false) {
   const messageDiv = document.createElement("div");
   messageDiv.className = `message ${isUser ? "user" : "agent"}`;
@@ -1040,7 +1466,7 @@ function createMessageBubble(text, isUser, isPartial = false) {
 
   const textP = document.createElement("p");
   textP.className = "bubble-text";
-  textP.textContent = text;
+  setBubbleTextWithLinks(textP, text);
 
   // Add typing indicator for partial messages
   if (isPartial && !isUser) {
@@ -1097,7 +1523,7 @@ function updateMessageBubble(element, text, isPartial = false) {
     existingIndicator.remove();
   }
 
-  textElement.textContent = text;
+  setBubbleTextWithLinks(textElement, text);
 
   // Add typing indicator for partial messages
   if (isPartial) {
@@ -1114,6 +1540,106 @@ function addSystemMessage(text) {
   messageDiv.textContent = text;
   messagesDiv.appendChild(messageDiv);
   scrollToBottom();
+}
+
+function formatDurationLabel(milliseconds) {
+  const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) {
+    const hourLabel = hours === 1 ? "hour" : "hours";
+    const minuteLabel = minutes === 1 ? "minute" : "minutes";
+    const secondLabel = seconds === 1 ? "second" : "seconds";
+    return `${hours} ${hourLabel} ${minutes} ${minuteLabel} ${seconds} ${secondLabel}`;
+  }
+  if (minutes === 0) {
+    const secondLabel = seconds === 1 ? "second" : "seconds";
+    return `${seconds} ${secondLabel}`;
+  }
+  const minuteLabel = minutes === 1 ? "minute" : "minutes";
+  const secondLabel = seconds === 1 ? "second" : "seconds";
+  return `${minutes} ${minuteLabel} ${seconds} ${secondLabel}`;
+}
+
+function markConversationStarted() {
+  if (!conversationStartedAt) {
+    conversationStartedAt = Date.now();
+  }
+}
+
+function showEndConversationSummary() {
+  const startAt = conversationStartedAt || Date.now();
+  const endAt = sessionEndedAt || Date.now();
+  const durationMs = Math.max(0, endAt - startAt);
+
+  if (summarySessionId) {
+    summarySessionId.textContent = sessionId;
+  }
+  if (summaryUserName) {
+    summaryUserName.textContent = userInfo?.fullName || "-";
+  }
+  if (summaryUserEmail) {
+    summaryUserEmail.textContent = userInfo?.emailAddress || "-";
+  }
+  if (summaryDuration) {
+    summaryDuration.textContent = formatDurationLabel(durationMs);
+  }
+  if (endConversationModal) {
+    endConversationModal.classList.add("show");
+  }
+}
+
+function stopKeywordRecognizer() {
+  keywordRecognizerActive = false;
+  if (keywordRecognizer) {
+    try {
+      keywordRecognizer.stop();
+    } catch (e) {
+      console.warn("Keyword recognizer stop failed:", e);
+    }
+  }
+}
+
+function stopAudioSession() {
+  is_audio = false;
+  if (audioPlayerNode) {
+    audioPlayerNode.port.postMessage({ command: "endOfAudio" });
+  }
+  if (micStream) {
+    micStream.getTracks().forEach((track) => track.stop());
+    micStream = null;
+  }
+  stopKeywordRecognizer();
+}
+
+function endConversation() {
+  if (hasEndedConversation || isEndingConversation) {
+    return;
+  }
+  isEndingConversation = true;
+  hasEndedConversation = true;
+  sessionEndedAt = Date.now();
+
+  stopAudioSession();
+  clearSuppressAgentOutput();
+
+  if (startAudioButton) {
+    startAudioButton.disabled = true;
+  }
+  if (endConversationButton) {
+    endConversationButton.disabled = true;
+  }
+
+  const canClose = websocket && (
+    websocket.readyState === WebSocket.OPEN
+    || websocket.readyState === WebSocket.CONNECTING
+  );
+  if (canClose) {
+    websocket.close(1000, "Conversation ended by user");
+  } else {
+    showEndConversationSummary();
+  }
 }
 
 // Scroll to bottom of messages
@@ -1149,12 +1675,21 @@ function sanitizeEventForDisplay(event) {
 
 // WebSocket handlers
 function connectWebsocket() {
+  if (hasEndedConversation) {
+    return;
+  }
+
   // Connect websocket
   const ws_url = getWebSocketUrl();
   websocket = new WebSocket(ws_url);
 
   // Handle connection open
   websocket.onopen = function () {
+    if (hasEndedConversation) {
+      websocket.close(1000, "Conversation already ended");
+      return;
+    }
+
     console.log("WebSocket connection opened.");
     updateConnectionStatus(true);
     addSystemMessage("Connected to ADK streaming server");
@@ -1176,6 +1711,10 @@ function connectWebsocket() {
 
   // Handle incoming messages
   websocket.onmessage = function (event) {
+    if (hasEndedConversation) {
+      return;
+    }
+
     // Parse the incoming ADK Event
     const adkEvent = JSON.parse(event.data);
     console.log("[AGENT TO CLIENT] ", adkEvent);
@@ -1300,7 +1839,7 @@ function connectWebsocket() {
     if (adkEvent.turnComplete === true) {
       isAgentSpeaking = false;
       interruptionUnlockedUntil = 0;
-      suppressAgentOutputForTurn = false;
+      clearSuppressAgentOutput();
       // Remove typing indicator from current message
       if (currentBubbleElement) {
         const textElement = currentBubbleElement.querySelector(".bubble-text");
@@ -1327,9 +1866,13 @@ function connectWebsocket() {
       if (pendingWelcomeScriptAfterTurn) {
         pendingWelcomeScriptAfterTurn = false;
         startVirtualTourIntro();
-      } else if (pendingVirtualTourVideo) {
+      } else if (pendingVirtualTourVideo && !hasOutputTranscriptionInTurn) {
+        // Fallback path: if no output transcription stream is available, start video on turn complete.
         pendingVirtualTourVideo = false;
         playYouTubeVideo(DEFAULT_YOUTUBE_URL);
+      } else if (pendingRegistrationLinkAfterTurn) {
+        pendingRegistrationLinkAfterTurn = false;
+        showRegistrationLinkPrompt();
       }
 
       return;
@@ -1339,11 +1882,12 @@ function connectWebsocket() {
     if (adkEvent.interrupted === true) {
       isAgentSpeaking = false;
       interruptionUnlockedUntil = 0;
-      suppressAgentOutputForTurn = false;
+      clearSuppressAgentOutput();
       // Stop audio playback if it's playing
       if (audioPlayerNode) {
         audioPlayerNode.port.postMessage({ command: "endOfAudio" });
       }
+      pauseYouTubeVideo(!hasHandledTourEnd);
 
       // Keep the partial message but mark it as interrupted
       if (currentBubbleElement) {
@@ -1390,7 +1934,21 @@ function connectWebsocket() {
 
       if (transcriptionText) {
         if (isFinished) {
+          if (isResumeVideoCommand(transcriptionText)) {
+            resumeYouTubeVideo();
+            suppressAgentOutputTemporarily(3000);
+            return;
+          }
           handleWelcomeConfirmation(transcriptionText, true);
+
+          if (postTourFollowupActive && isNoOrSatisfied(transcriptionText)) {
+            suppressAgentOutputTemporarily(5000);
+            pendingRegistrationLinkAfterTurn = true;
+            if (audioPlayerNode) {
+              audioPlayerNode.port.postMessage({ command: "endOfAudio" });
+            }
+            return;
+          }
         }
 
         if (!isEnglishOnlyInput(transcriptionText)) {
@@ -1450,6 +2008,7 @@ function connectWebsocket() {
     if (adkEvent.outputTranscription && adkEvent.outputTranscription.text) {
       const transcriptionText = adkEvent.outputTranscription.text;
       const isFinished = adkEvent.outputTranscription.finished;
+      markConversationStarted();
       hasOutputTranscriptionInTurn = true;
       isAgentSpeaking = true;
 
@@ -1508,6 +2067,10 @@ function connectWebsocket() {
 
         // If transcription is finished, reset the state
         if (isFinished) {
+          if (pendingVirtualTourVideo) {
+            pendingVirtualTourVideo = false;
+            playYouTubeVideo(DEFAULT_YOUTUBE_URL);
+          }
           currentOutputTranscriptionId = null;
           currentOutputTranscriptionElement = null;
         }
@@ -1548,6 +2111,7 @@ function connectWebsocket() {
           const data = part.inlineData.data;
 
           if (mimeType && mimeType.startsWith("audio/pcm") && audioPlayerNode) {
+            markConversationStarted();
             isAgentSpeaking = true;
             audioPlayerNode.port.postMessage(base64ToArray(data));
           }
@@ -1606,6 +2170,13 @@ function connectWebsocket() {
     if (sendButton) {
       sendButton.disabled = true;
     }
+    if (hasEndedConversation || isEndingConversation) {
+      addSystemMessage("Conversation ended.");
+      showEndConversationSummary();
+      isEndingConversation = false;
+      return;
+    }
+
     addSystemMessage("Connection closed. Reconnecting in 5 seconds...");
 
     // Log to console
@@ -1691,6 +2262,13 @@ function addSubmitHandler() {
         return false;
       }
 
+      if (isResumeVideoCommand(message)) {
+        // Local video-control command; do not forward to the model.
+        resumeYouTubeVideo();
+        messageInput.value = "";
+        return false;
+      }
+
       // Add user message bubble
       const userBubble = createMessageBubble(message, true, false);
       messagesDiv.appendChild(userBubble);
@@ -1700,6 +2278,11 @@ function addSubmitHandler() {
       messageInput.value = "";
 
       if (handleWelcomeConfirmation(message, false)) {
+        return false;
+      }
+
+      if (postTourFollowupActive && isNoOrSatisfied(message)) {
+        showRegistrationLinkPrompt();
         return false;
       }
 
@@ -1995,19 +2578,47 @@ function startAudio() {
 // Start the audio only when the user clicked the button
 // (due to the gesture requirement for the Web Audio API)
 const startAudioButton = document.getElementById("startAudioButton");
-startAudioButton.addEventListener("click", () => {
-  startAudioButton.disabled = true;
-  startAudio();
-  startKeywordRecognizer();
-  is_audio = true;
-  addSystemMessage("Audio mode enabled - you can now speak to the agent");
+if (startAudioButton) {
+  startAudioButton.addEventListener("click", () => {
+    startAudioButton.disabled = true;
+    startAudio();
+    startKeywordRecognizer();
+    is_audio = true;
+    addSystemMessage("Audio mode enabled - you can now speak to the agent");
 
-  // Log to console
-  addConsoleEntry('outgoing', 'Audio Mode Enabled', {
-    status: 'Audio worklets started',
-    message: 'Microphone active - audio input will be sent to agent'
-  }, '🎤', 'system');
-});
+    // Log to console
+    addConsoleEntry('outgoing', 'Audio Mode Enabled', {
+      status: 'Audio worklets started',
+      message: 'Microphone active - audio input will be sent to agent'
+    }, '🎤', 'system');
+  });
+}
+
+if (endConversationButton) {
+  endConversationButton.addEventListener("click", endConversation);
+}
+
+function closeEndSummaryModal() {
+  if (endConversationModal) {
+    endConversationModal.classList.remove("show");
+  }
+}
+
+if (closeEndConversationModal) {
+  closeEndConversationModal.addEventListener("click", closeEndSummaryModal);
+}
+
+if (closeSummaryButton) {
+  closeSummaryButton.addEventListener("click", closeEndSummaryModal);
+}
+
+if (endConversationModal) {
+  endConversationModal.addEventListener("click", (event) => {
+    if (event.target === endConversationModal) {
+      closeEndSummaryModal();
+    }
+  });
+}
 
 // Audio recorder handler
 function audioRecorderHandler(pcmData) {

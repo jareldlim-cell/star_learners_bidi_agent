@@ -68,6 +68,7 @@
       <!-- link to the separate knowledge-base management page -->
       <div class="header-manage">
         <a href="/static/kb.html" class="manage-link">Manage Knowledge Base</a>
+        <button type="button" id="openConsoleButton" class="manage-link console-toggle-btn">Event Console</button>
       </div>
       <div class="connection-status">
         <span class="status-indicator" id="statusIndicator"></span>
@@ -76,17 +77,24 @@
     </header>
 
     <div class="main-layout">
+      <div class="video-panel">
+        <div id="videoStage" class="video-stage">
+          <div class="video-placeholder">Virtual tour will begin shortly.</div>
+        </div>
+      </div>
+
       <div class="container">
         <div id="messages"></div>
 
         <div class="input-container">
           <div class="input-wrapper">
             <button type="button" id="startAudioButton">Start Interacting</button>
+            <button type="button" id="endConversationButton" disabled>End Conversation</button>
           </div>
         </div>
       </div>
 
-      <div class="console-panel">
+      <div class="console-panel console-popup hidden-popup" id="consolePopup">
         <div class="console-header">
           <h2>Event Console</h2>
           <div class="console-controls">
@@ -95,9 +103,28 @@
               <span>Show audio</span>
             </label>
             <button id="clearConsole" class="console-clear-btn">Clear</button>
+            <button id="closeConsoleButton" class="console-clear-btn">Close</button>
           </div>
         </div>
         <div id="consoleContent" class="console-content"></div>
+      </div>
+    </div>
+
+    <div id="endConversationModal" class="modal">
+      <div class="modal-content end-summary-content">
+        <div class="modal-header">
+          <h3>Conversation Summary</h3>
+          <button type="button" class="close-btn" id="closeEndConversationModal" aria-label="Close">&times;</button>
+        </div>
+        <div class="modal-body end-summary-body">
+          <div class="summary-row"><strong>Session ID:</strong> <span id="summarySessionId">-</span></div>
+          <div class="summary-row"><strong>Name:</strong> <span id="summaryUserName">-</span></div>
+          <div class="summary-row"><strong>Email:</strong> <span id="summaryUserEmail">-</span></div>
+          <div class="summary-row"><strong>Duration:</strong> <span id="summaryDuration">00:00:00</span></div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn-primary" id="closeSummaryButton">Done</button>
+        </div>
       </div>
     </div>
 
