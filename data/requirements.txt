@@ -1,0 +1,8 @@
+google-genai
+qdrant-client
+yt-dlp
+opencv-python-headless
+beautifulsoup4
+requests
+python-dotenv
+PyYAML
