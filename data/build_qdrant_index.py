@@ -120,9 +120,20 @@ def stable_hash(parts: Iterable[str]) -> str:
 
 
 def extract_video_id_from_url(url: str) -> Optional[str]:
-    """Extract YouTube video ID from a watch URL."""
-    match = re.search(r"[?&]v=([A-Za-z0-9_-]{11})", url)
-    return match.group(1) if match else None
+    """Extract YouTube video ID from watch, short-link, or Shorts URLs."""
+    # Standard: https://www.youtube.com/watch?v=VIDEOID
+    m = re.search(r"[?&]v=([A-Za-z0-9_-]{11})", url)
+    if m:
+        return m.group(1)
+    # Short link: https://youtu.be/VIDEOID
+    m = re.search(r"youtu\.be/([A-Za-z0-9_-]{11})", url)
+    if m:
+        return m.group(1)
+    # Shorts: https://www.youtube.com/shorts/VIDEOID
+    m = re.search(r"youtube\.com/shorts/([A-Za-z0-9_-]{11})", url)
+    if m:
+        return m.group(1)
+    return None
 
 
 def to_hms(seconds: int) -> str:
@@ -181,14 +192,25 @@ def extract_readable_text(html: str) -> Tuple[str, str]:
     return title, text
 
 
+# Module-level HTTP session — reused across all fetch_url calls for connection pooling.
+_http_session: Optional[requests.Session] = None
+
+
+def _get_http_session() -> requests.Session:
+    global _http_session
+    if _http_session is None:
+        _http_session = requests.Session()
+        _http_session.headers.update({"User-Agent": USER_AGENT})
+    return _http_session
+
+
 def fetch_url(url: str, attempts: int = 3, timeout: int = 20) -> str:
-    session = requests.Session()
-    headers = {"User-Agent": USER_AGENT}
+    session = _get_http_session()
 
     last_error: Optional[Exception] = None
     for attempt in range(1, attempts + 1):
         try:
-            response = session.get(url, headers=headers, timeout=timeout)
+            response = session.get(url, timeout=timeout)
             response.raise_for_status()
             response.encoding = response.encoding or "utf-8"
             return response.text
@@ -408,6 +430,11 @@ def build_website_points(
     for batch in iter_batches(records, batch_size):
         texts = [r["content"] for r in batch]
         vectors = embedder.embed_texts(texts, task_type="RETRIEVAL_DOCUMENT")
+        if len(vectors) != len(texts):
+            raise RuntimeError(
+                f"Embedding count mismatch: sent {len(texts)} texts, "
+                f"received {len(vectors)} embeddings"
+            )
 
         for item, vector in zip(batch, vectors):
             payload = {
@@ -470,20 +497,22 @@ def extract_frames(video_path: Path, frame_interval_sec: int, out_dir: Path) -> 
     next_ts = 0
     frame_index = 0
 
-    while True:
-        ok, frame = capture.read()
-        if not ok:
-            break
+    try:
+        while True:
+            ok, frame = capture.read()
+            if not ok:
+                break
 
-        current_sec = int(frame_index / fps)
-        if current_sec >= next_ts:
-            frame_path = out_dir / f"frame_{current_sec:06d}.jpg"
-            cv2.imwrite(str(frame_path), frame)
-            frames.append((current_sec, frame_path))
-            next_ts += frame_interval_sec
-        frame_index += 1
+            current_sec = int(frame_index / fps)
+            if current_sec >= next_ts:
+                frame_path = out_dir / f"frame_{current_sec:06d}.jpg"
+                cv2.imwrite(str(frame_path), frame)
+                frames.append((current_sec, frame_path))
+                next_ts += frame_interval_sec
+            frame_index += 1
+    finally:
+        capture.release()
 
-    capture.release()
     return frames
 
 
@@ -521,7 +550,7 @@ def build_youtube_points(
                     "video_id": video_id,
                     "timestamp_sec": timestamp_sec,
                     "timestamp_hms": to_hms(timestamp_sec),
-                    "frame_path": str(frame_path),
+                    # frame_path intentionally omitted: frames live in a temp dir during ingestion
                     "created_at": now_iso(),
                 }
                 points.append(
@@ -551,20 +580,34 @@ def extract_and_save_frames(
     frames_dir.mkdir(parents=True, exist_ok=True)
     frames_index.parent.mkdir(parents=True, exist_ok=True)
 
-    if local_video and local_video.exists():
-        LOGGER.info("Using local video file: %s", local_video)
-        video_id = extract_video_id_from_url(youtube_url) or local_video.stem[:64]
-        video_path = local_video
-        frame_items = extract_frames(video_path, frame_interval_sec, frames_dir)
-    else:
-        with tempfile.TemporaryDirectory(prefix="yt_ingest_") as tmp:
-            tmp_path = Path(tmp)
+    _tmp_ctx = None
+    try:
+        if local_video and local_video.exists():
+            LOGGER.info("Using local video file: %s", local_video)
+            video_id = extract_video_id_from_url(youtube_url) or local_video.stem[:64]
+            video_path = local_video
+        else:
+            _tmp_ctx = tempfile.TemporaryDirectory(prefix="yt_ingest_")
+            tmp_path = Path(_tmp_ctx.name)
             video_id, video_path = download_youtube_video(youtube_url, tmp_path / "video")
-            # Extract directly to persistent frames_dir (not temp)
-            frame_items = extract_frames(video_path, frame_interval_sec, frames_dir)
+        # Extract to persistent frames_dir in both branches
+        frame_items = extract_frames(video_path, frame_interval_sec, frames_dir)
+    except Exception:
+        if _tmp_ctx is not None:
+            _tmp_ctx.cleanup()
+        raise
+
+    if frames_index.exists():
+        LOGGER.warning(
+            "Frames index already exists: %s — appending to existing file.", frames_index
+        )
 
     saved = 0
-    with frames_index.open("w", encoding="utf-8") as fh:
+    try:
+        open_mode = "a" if frames_index.exists() else "w"
+    except Exception:
+        open_mode = "w"
+    with frames_index.open(open_mode, encoding="utf-8") as fh:
         for timestamp_sec, frame_path in frame_items:
             try:
                 image_bytes = frame_path.read_bytes()
@@ -593,6 +636,8 @@ def extract_and_save_frames(
                 LOGGER.exception("Failed processing frame %s", frame_path)
                 failures.append({"source": str(frame_path), "error": str(exc)})
 
+    if _tmp_ctx is not None:
+        _tmp_ctx.cleanup()
     LOGGER.info("Frames extracted and saved to %s (%s records)", frames_index, saved)
     return saved
 

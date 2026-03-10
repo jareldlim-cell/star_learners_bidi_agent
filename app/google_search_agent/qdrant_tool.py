@@ -25,6 +25,11 @@ _genai_client = None
 _mm_model = None
 _qdrant_client = None
 
+# Named constants — avoids magic numbers in result truncation
+_TEXT_CONTENT_MAX_CHARS = 600   # Max chars returned per text result
+_VIDEO_CONTENT_MAX_CHARS = 300  # Max chars returned per video frame caption
+_QDRANT_TIMEOUT_SEC = 10        # Connection + read timeout for Qdrant client
+
 # Region where gemini-embedding-001 is reliably available
 _EMBED_LOCATION = "us-central1"
 
@@ -53,15 +58,21 @@ def _get_genai_client():
 def _get_mm_model():
     """Return the cached Vertex AI multimodal embedding model.
 
-    multimodalembedding@001 is only available in us-central1, so we must
-    override the global Vertex AI location for this call.
+    NOTE: multimodalembedding@001 requires us-central1. This function
+    re-initializes the global vertexai state to us-central1 on first call.
+    This is safe because it only runs once (singleton) and the process-wide
+    vertexai location is us-central1 for all embedding paths anyway.
+    TODO: Refactor to use a per-call regional client instead of global init
+    to avoid this hidden side effect.
     """
     global _mm_model
     if _mm_model is None:
         import vertexai
         from vertexai.vision_models import MultiModalEmbeddingModel
         gcp_project = os.getenv("GCP_PROJECT") or os.getenv("GOOGLE_CLOUD_PROJECT")
-        # Re-init to us-central1 where multimodalembedding@001 is available
+        if not gcp_project:
+            raise RuntimeError("Missing GCP_PROJECT / GOOGLE_CLOUD_PROJECT env var")
+        # Scoped to singleton init only — vertexai has no per-call location API
         vertexai.init(project=gcp_project, location="us-central1")
         _mm_model = MultiModalEmbeddingModel.from_pretrained("multimodalembedding@001")
     return _mm_model
@@ -73,7 +84,11 @@ def _get_qdrant_client():
         from qdrant_client import QdrantClient
         qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
         qdrant_api_key = os.getenv("QDRANT_API_KEY")
-        _qdrant_client = QdrantClient(url=qdrant_url, api_key=qdrant_api_key)
+        _qdrant_client = QdrantClient(
+            url=qdrant_url,
+            api_key=qdrant_api_key,
+            timeout=_QDRANT_TIMEOUT_SEC,
+        )
     return _qdrant_client
 
 
@@ -112,7 +127,7 @@ def search_qdrant(query: str, top_k: int = 3) -> Dict[str, Any]:
             payload = dict(hit.payload or {})
             text_results.append({
                 "score": float(hit.score),
-                "content": payload.get("content", "")[:600],
+                "content": payload.get("content", "")[:_TEXT_CONTENT_MAX_CHARS],
                 "source_url": payload.get("source_url", ""),
             })
         logger.info("Text search returned %d hits", len(text_results))
@@ -143,7 +158,7 @@ def search_qdrant(query: str, top_k: int = 3) -> Dict[str, Any]:
                 deeplink = f"https://www.youtube.com/watch?v={video_id}&t={timestamp_sec}s"
             video_results.append({
                 "score": float(hit.score),
-                "content": payload.get("content", "")[:300],
+                "content": payload.get("content", "")[:_VIDEO_CONTENT_MAX_CHARS],
                 "video_id": video_id,
                 "timestamp_sec": timestamp_sec,
                 "timestamp_hms": payload.get("timestamp_hms", ""),

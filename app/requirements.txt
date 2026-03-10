@@ -6,5 +6,4 @@ requests
 google-adk
 google-genai
 google-cloud-aiplatform
-qdrant-client
-qdrant-client
+qdrant-client>=1.9.0

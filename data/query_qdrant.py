@@ -21,7 +21,14 @@ DEFAULT_COLLECTION = "star_learners_kb"
 DEFAULT_TEXT_EMBED_MODEL = "gemini-embedding-001"
 DEFAULT_IMAGE_EMBED_MODEL = "gemini-embedding-001"
 DEFAULT_CAPTION_MODEL = "gemini-2.0-flash"
-TOUR_HINT_KEYWORDS = {"tour", "demo", "show", "watch", "see", "video", "classroom"}
+# Keywords that suggest the user wants to see the virtual tour video.
+# Deliberately excludes "see" (too common in general English to be a reliable signal).
+TOUR_HINT_KEYWORDS = frozenset({"tour", "demo", "show", "watch", "video", "playback", "footage"})
+
+# Boost applied to YouTube frame scores when the query has tour intent.
+# Cosine similarity scores range [-1.0, 1.0]; 0.1 gives a moderate rank nudge
+# without completely overriding semantic relevance.
+_TOUR_INTENT_SCORE_BOOST = 0.1
 
 
 def parse_args() -> argparse.Namespace:
@@ -220,7 +227,7 @@ def main() -> None:
     if has_tour_intent(args.query):
         for row in results:
             if row["source_type"] == "youtube_frame":
-                row["score"] += 0.1
+                row["score"] += _TOUR_INTENT_SCORE_BOOST
 
     results.sort(key=lambda x: x["score"], reverse=True)
     output = {

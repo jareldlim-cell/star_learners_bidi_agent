@@ -2,6 +2,10 @@
 .env
 .env.local
 .env.*.local
+**/.env
+**/.env.local
+app/.env
+data/.env
 
 # Claude
 .claude
@@ -33,6 +37,7 @@ wheels/
 *.egg
 
 # Virtual environments
+.venv/
 venv/
 ENV/
 env/

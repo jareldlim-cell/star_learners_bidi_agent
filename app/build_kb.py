@@ -9,19 +9,21 @@ import requests
 import tempfile
 import os
 import re
+from pathlib import Path
 from urllib.parse import urlparse
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv(Path(__file__).parent / ".env")
+load_dotenv()  # fallback to CWD
 
 # ==========================================
 # CONFIGURATION
 # ==========================================
 
-PROJECT_ID = "tridorian-sg-vertex-ai"
-LOCATION = "asia-southeast1"
-
-CORPUS_PATH = (
-    "projects/644602727268/locations/asia-southeast1/"
-    "ragCorpora/2305843009213693952"
-)
+PROJECT_ID = os.environ["GOOGLE_CLOUD_PROJECT"]    # KeyError on startup if not set
+LOCATION = os.getenv("GOOGLE_CLOUD_LOCATION", "asia-southeast1")
+CORPUS_PATH = os.environ["VERTEX_RAG_CORPUS_PATH"] # KeyError on startup if not set
 
 # ==========================================
 # INITIALIZE VERTEX AI
