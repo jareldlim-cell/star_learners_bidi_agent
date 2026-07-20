@@ -7,3 +7,4 @@ google-adk
 google-genai
 weaviate-client>=4.0
 google-cloud-discoveryengine
+google-cloud-aiplatform
